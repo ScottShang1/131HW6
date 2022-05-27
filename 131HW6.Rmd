@@ -1,29 +1,253 @@
 ---
 title: "131HW6"
-output: pdf_document
-date: '2022-05-25'
+author: "Scott Shang (8458655)"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+---
+title: "131HW6"
+author: "Scott Shang (8458655)"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, echo=FALSE}
+library(knitr)
+# set global chunk options: images will be 7x5 inches
+knitr::opts_chunk$set(fig.width=7, fig.height=5)
+options(digits = 4)
+
+
+## indents are for indenting r code as formatted text
+## They may need to be adjusted depending on your OS
+# if your output looks odd, increase or decrease indent
+indent1 = '    '
+indent2 = '        '
+indent3 = '            '
 ```
 
-## R Markdown
+Question1
+```{r}
+library("tidyverse")
+library("tidymodels")
+library("dplyr")
+library("yardstick")
+library(tidymodels)
+library(readr)
+library(pROC)
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(klaR)
+library(corrplot)
+library(knitr)
+library(MASS)
+library(ggplot2)
+library(glmnet)
+library(janitor)
+library(rpart.plot)
+library(randomForest)
+library(ranger)
+library(vip)
+library(xgboost)
+pkm=read_csv('Pokemon.csv')
+pkm=clean_names(pkm)
+pkm=filter(pkm,type_1 %in% c("Bug","Fire","Grass","Normal","Water","Psychic"))
+pkm$type_1=as.factor(pkm$type_1)
+pkm$legendary=as.factor(pkm$legendary)
+pkm$generation=as.factor(pkm$generation)
+set.seed(1234)
+pkm_split=initial_split(pkm,prop=0.70,strata=type_1)
+train=training(pkm_split)
+test=testing(pkm_split)
+folds=vfold_cv(train,v=5,strata=type_1)
+rcp=recipe(type_1~legendary+generation+sp_atk+attack+speed+defense+hp+sp_def,data=train) %>%
+  step_dummy(legendary) %>%
+  step_dummy(generation) %>%
+  step_normalize(all_predictors())
+```
+Question2
+```{r}
+pkm %>% 
+  dplyr::select(where(is.numeric)) %>% 
+  cor() %>% 
+  corrplot(method='number',type='lower')
+```
+I choose to include all the numeric/continuous variables in this plot. We observe a strong correlation between total with other variables, which make sense because total is the sum of all stats. Also, we don't see any negative correlation, maybe because all the stats of a Pokemon tend to grow together. 
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Question3
+```{r}
+tree_spec=decision_tree() %>%
+  set_engine("rpart")
+class_tree_spec=tree_spec %>%
+  set_mode("classification")
+class_tree_wf=workflow() %>%
+  add_model(class_tree_spec %>% 
+      set_args(cost_complexity = tune())) %>%
+  add_recipe(rcp)
 
-```{r cars}
-summary(cars)
+class_tree_grid=grid_regular(cost_complexity(range = c(-3, -1)), levels = 10)
+
+class_tree_tune_res=tune_grid(
+  class_tree_wf, 
+  resamples=folds, 
+  grid=class_tree_grid, 
+  metrics=metric_set(roc_auc)
+)
+
+autoplot(class_tree_tune_res)
+```
+We observe that a single decision tree perform better with a smaller complexity penalty overall, but it perform best on the middle range.
+
+Question4
+
+```{r}
+collect_metrics(class_tree_tune_res) %>% 
+  arrange(-mean)
+```
+The roc_auc of our best-performing pruned decision tree on the folds is 0.66 in model 06.
+
+
+Question5
+
+```{r}
+class_tree_best=select_best(class_tree_tune_res)
+
+class_tree_final=finalize_workflow(class_tree_wf,class_tree_best)
+
+class_tree_final_fit=fit(class_tree_final,data=train)
+
+class_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+Another Question5
+```{r}
+rf_spec=rand_forest(mtry = tune(),trees = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+rf_wf=workflow() %>%
+  add_model(rf_spec) %>%
+  add_recipe(rcp)
+
+rf_grid=grid_regular(mtry(range=c(1,8)),trees(range=c(1,10)),min_n(range=c(1,10)),levels=8)
+
+rf_grid
+```
+mtry is the number of our selected predictors that we assign to each tree to make its decisions.
+trees is the number of trees we create in our forest.
+min_n is the minimum number of data values needed to create further split.
+
+
+mtry should not be smaller than 8 because it can't exceed the number of predictors in our grid, if so, there is no subset of the predictors that can be chosen. And mtry=0 means we don't have predictors at all, which doesn't make sense. mtry=8 represents all predictors we have will be randomly sampled.
+
+Question6
+```{r}
+rf_tune_res=tune_grid(
+  rf_wf, 
+  resamples=folds, 
+  grid=rf_grid, 
+  metrics=metric_set(roc_auc)
+)
+
+autoplot(rf_tune_res)
+```
+WE observe that the best performing models features 7, 8, or 10 trees. Minimal node size of 4 seemed to perform pretty good. Increasing the number of selected variables improves the performance. The number of selected should be at least 5 for the sake of performance. 
+
+Question7
+```{r}
+collect_metrics(rf_tune_res) %>% 
+  arrange(-mean)
+```
+The roc_auc of our best-performing pruned decision tree on the folds is 0.7137 in model 238.
+
+
+Question8
+```{r}
+rf_best=select_best(rf_tune_res)
+
+rf_final=finalize_workflow(rf_wf,rf_best)
+
+rf_final_fit=fit(rf_final,data=train)
+
+rf_final_fit %>%
+  extract_fit_engine() %>%
+  vip()
+```
+The most useful variables are attack, hp, then sp_atk. The least useful variables are generation_X5, generation_X4, generation_X3, and generation_X2. Although I know nothing about Pokemon, this makes sense to me.
+
+
+Question 9
+```{r}
+boosted_spec=boost_tree(trees=tune()) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+boosted_wf=workflow() %>% 
+  add_recipe(rcp) %>% 
+  add_model(boosted_spec)
+
+grid_boosted=grid_regular(trees(range=c(10,2000)),levels = 10)
+
+tune_res_boosted=tune_grid(
+  boosted_wf, 
+  resamples=folds, 
+  grid=grid_boosted, 
+  metrics=metric_set(roc_auc))
+
+autoplot(tune_res_boosted)
+
+boost_best=select_best(tune_res_boosted)
+```
+We observe that there is a jump of roc_auc from the 0-250 tree range, after which we get slowly decreasing roc_auc. 
+
+
+```{r}
+collect_metrics(tune_res_boosted) %>% 
+  arrange(-mean)
+```
+The roc_auc of our best-performing pruned decision tree on the folds is 0.721 in model 02.
+
+Question 10
+```{r}
+class_tree_metrics=collect_metrics(class_tree_tune_res) %>% 
+  arrange(-mean)
+rf_metrics=collect_metrics(rf_tune_res) %>% 
+  arrange(-mean)
+boosted_metrics=collect_metrics(tune_res_boosted) %>% 
+  arrange(-mean)
+
+best_metrics=bind_rows(class_tree_best,rf_best,boost_best)
+best_metrics=best_metrics %>% add_column('model' = c("Pruned Decision Tree","Random Forest","Boosted Tree"),'roc_auc' = c(0.6603, 0.7137, 0.7208))
+best_metrics[,c("model",".config","cost_complexity","mtry","trees","min_n","roc_auc")]
+
+```
+As we can see, the Boost Tree model with 231 trees performs best on the folds.
+
+```{r}
+final=finalize_workflow(boosted_wf,boost_best)
+final_fit=fit(final,data=test)
+
+augment(final_fit,new_data=test) %>% 
+  roc_auc(truth=type_1,estimate=c('.pred_Bug','.pred_Fire','.pred_Grass','.pred_Normal','.pred_Psychic','.pred_Water'))
+
+```
+```{r}
+roc_curves=augment(final_fit,new_data=test) %>%
+  roc_curve(truth=type_1,estimate=c('.pred_Bug','.pred_Fire', '.pred_Grass','.pred_Normal','.pred_Psychic','.pred_Water'))
+autoplot(roc_curves)
 ```
 
-## Including Plots
+```{r}
+map=augment(final_fit,new_data=test) %>%
+  conf_mat(truth=type_1,estimate=.pred_class) 
+autoplot(map,type="heatmap")
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
 ```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Our best-performing model is extremely accurate. I tried other models, and they show my code has no problem. I think the only explanation might be the best model performs so well that it kind of overfit the data set, but from the test data set, our model predicts every classes accurately, and the auc roc is 1.
